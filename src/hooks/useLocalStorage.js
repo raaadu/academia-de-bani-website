@@ -1,98 +1,166 @@
 import { useState, useEffect } from 'react'
-
-export function useLocalStorage(key, initialValue) {
-  const [storedValue, setStoredValue] = useState(() => {
-    try {
-      const item = window.localStorage.getItem(key)
-      return item ? JSON.parse(item) : initialValue
-    } catch {
-      return initialValue
-    }
-  })
-
-  const setValue = (value) => {
-    try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value
-      setStoredValue(valueToStore)
-      window.localStorage.setItem(key, JSON.stringify(valueToStore))
-    } catch (error) {
-      console.error('localStorage error:', error)
-    }
-  }
-
-  return [storedValue, setValue]
-}
+import { supabase } from '../lib/supabase'
+import { useAuth } from './useAuth'
 
 export function useAppState() {
-  const [user, setUser] = useLocalStorage('adb_user', null)
-  const [xp, setXp] = useLocalStorage('adb_xp', 0)
-  const [completedLessons, setCompletedLessons] = useLocalStorage('adb_completed_lessons', [])
-  const [answeredExercises, setAnsweredExercises] = useLocalStorage('adb_answered_exercises', {})
-  const [baselineScore, setBaselineScore] = useLocalStorage('adb_baseline_score', null)
-  const [finalScore, setFinalScore] = useLocalStorage('adb_final_score', null)
-  const [streak, setStreak] = useLocalStorage('adb_streak', 0)
-  const [lastActiveDate, setLastActiveDate] = useLocalStorage('adb_last_active', null)
-  const [earnedBadges, setEarnedBadges] = useLocalStorage('adb_badges', [])
-  const [diagnosticDone, setDiagnosticDone] = useLocalStorage('adb_diagnostic_done', false)
+  const { user: authUser } = useAuth()
+  const uid = authUser?.id
 
+  const [studentProfile, setStudentProfile] = useState(null)
+  const [xp, setXp] = useState(0)
+  const [completedLessons, setCompletedLessons] = useState([])
+  const [answeredExercises, setAnsweredExercises] = useState({})
+  const [baselineScore, setBaselineScoreState] = useState(null)
+  const [finalScore, setFinalScoreState] = useState(null)
+  const [streak, setStreak] = useState(0)
+  const [earnedBadges, setEarnedBadges] = useState([])
+
+  // Load all data from Supabase whenever the auth user changes
   useEffect(() => {
-    const today = new Date().toDateString()
-    if (lastActiveDate !== today) {
-      const yesterday = new Date()
-      yesterday.setDate(yesterday.getDate() - 1)
-      if (lastActiveDate === yesterday.toDateString()) {
-        setStreak(s => s + 1)
-      } else if (lastActiveDate !== null) {
-        setStreak(1)
+    if (!uid) return
+    fetchAll(uid)
+  }, [uid])
+
+  const fetchAll = async (userId) => {
+    const [{ data: student }, { data: progress }, { data: attempts }] = await Promise.all([
+      supabase.from('students').select('*').eq('id', userId).single(),
+      supabase.from('progress').select('*').eq('student_id', userId).single(),
+      supabase.from('exercise_attempts').select('*').eq('student_id', userId),
+    ])
+
+    if (student) setStudentProfile(student)
+
+    if (progress) {
+      setXp(progress.xp_total || 0)
+      setCompletedLessons(progress.lessons_completed || [])
+      setBaselineScoreState(progress.baseline_score ?? null)
+      setFinalScoreState(progress.final_score ?? null)
+      setEarnedBadges(progress.badges || [])
+
+      // Streak logic
+      const today = new Date().toDateString()
+      const lastActive = progress.last_active
+        ? new Date(progress.last_active).toDateString()
+        : null
+
+      if (lastActive !== today) {
+        const yesterday = new Date()
+        yesterday.setDate(yesterday.getDate() - 1)
+        let newStreak = progress.streak_days || 0
+        if (lastActive === yesterday.toDateString()) {
+          newStreak += 1
+        } else if (lastActive !== null) {
+          newStreak = 1
+        } else {
+          newStreak = 1
+        }
+        setStreak(newStreak)
+        supabase.from('progress')
+          .update({ streak_days: newStreak, last_active: new Date().toISOString() })
+          .eq('student_id', userId)
+          .then(() => {})
+      } else {
+        setStreak(progress.streak_days || 0)
       }
-      setLastActiveDate(today)
     }
-  }, [])
 
-  const addXp = (amount) => {
-    setXp(prev => prev + amount)
+    if (attempts) {
+      // Build map from most-recent attempt per question (first occurrence wins since
+      // the UI prevents re-answering, but deduplicate just in case)
+      const map = {}
+      for (const a of attempts) {
+        if (!map[a.question_id]) {
+          map[a.question_id] = { correct: a.was_correct, answeredAt: a.attempted_at }
+        }
+      }
+      setAnsweredExercises(map)
+    }
   }
 
-  const completeLesson = (lessonId) => {
-    if (!completedLessons.includes(lessonId)) {
-      setCompletedLessons(prev => [...prev, lessonId])
-    }
+  // ── WRITES ──────────────────────────────────────────────
+
+  const addXp = async (amount) => {
+    const newXp = xp + amount
+    setXp(newXp)
+    await supabase.from('progress').update({ xp_total: newXp }).eq('student_id', uid)
   }
 
-  const answerExercise = (exerciseId, isCorrect) => {
-    setAnsweredExercises(prev => ({
-      ...prev,
-      [exerciseId]: { correct: isCorrect, answeredAt: Date.now() },
-    }))
+  const completeLesson = async (lessonId) => {
+    if (completedLessons.includes(lessonId)) return
+    const newLessons = [...completedLessons, lessonId]
+    setCompletedLessons(newLessons)
+    await supabase.from('progress').update({ lessons_completed: newLessons }).eq('student_id', uid)
   }
 
-  const earnBadge = (badgeId) => {
-    if (!earnedBadges.includes(badgeId)) {
-      setEarnedBadges(prev => [...prev, badgeId])
+  const answerExercise = async (exerciseId, isCorrect) => {
+    const newAnswered = {
+      ...answeredExercises,
+      [exerciseId]: { correct: isCorrect, answeredAt: new Date().toISOString() },
     }
+    setAnsweredExercises(newAnswered)
+    const exercisesCompleted = Object.keys(newAnswered)
+
+    await Promise.all([
+      supabase.from('progress')
+        .update({ exercises_completed: exercisesCompleted })
+        .eq('student_id', uid),
+      supabase.from('exercise_attempts').insert({
+        student_id: uid,
+        question_id: exerciseId,
+        was_correct: isCorrect,
+      }),
+    ])
+  }
+
+  const setBaselineScore = async (score) => {
+    if (baselineScore !== null) return // only set once
+    setBaselineScoreState(score)
+    await supabase.from('progress')
+      .update({ baseline_score: score })
+      .eq('student_id', uid)
+      .is('baseline_score', null)
+  }
+
+  const setFinalScore = async (score) => {
+    const delta = baselineScore !== null ? score - baselineScore : null
+    setFinalScoreState(score)
+    await supabase.from('progress')
+      .update({ final_score: score, delta })
+      .eq('student_id', uid)
+  }
+
+  const earnBadge = async (badgeId) => {
+    if (earnedBadges.includes(badgeId)) return
+    const newBadges = [...earnedBadges, badgeId]
+    setEarnedBadges(newBadges)
+    await supabase.from('progress').update({ badges: newBadges }).eq('student_id', uid)
+  }
+
+  // setUser is used by ProfileTab to update name/cohort
+  const setUser = async (updated) => {
+    if (!updated) return
+    setStudentProfile(prev => ({ ...prev, name: updated.name, cohort: updated.cohort }))
+    await supabase.from('students')
+      .update({ name: updated.name, cohort: updated.cohort })
+      .eq('id', uid)
   }
 
   const getLevel = () => {
-    if (xp < 100) return { name: 'Novice', next: 'Explorator', needed: 100 }
-    if (xp < 300) return { name: 'Explorator', next: 'Student', needed: 300 }
-    if (xp < 600) return { name: 'Student', next: 'Analist', needed: 600 }
-    if (xp < 1000) return { name: 'Analist', next: 'Economist', needed: 1000 }
-    if (xp < 1500) return { name: 'Economist', next: 'Expert', needed: 1500 }
+    if (xp < 100)  return { name: 'Novice',     next: 'Explorator', needed: 100  }
+    if (xp < 300)  return { name: 'Explorator', next: 'Student',    needed: 300  }
+    if (xp < 600)  return { name: 'Student',    next: 'Analist',    needed: 600  }
+    if (xp < 1000) return { name: 'Analist',    next: 'Economist',  needed: 1000 }
+    if (xp < 1500) return { name: 'Economist',  next: 'Expert',     needed: 1500 }
     return { name: 'Expert', next: null, needed: null }
   }
 
-  const resetAll = () => {
-    setUser(null)
-    setXp(0)
-    setCompletedLessons([])
-    setAnsweredExercises({})
-    setBaselineScore(null)
-    setFinalScore(null)
-    setStreak(0)
-    setLastActiveDate(null)
-    setEarnedBadges([])
-    setDiagnosticDone(false)
-  }
+  // Expose the same shape as the old hook so every component works unchanged
+  const user = studentProfile
+    ? { name: studentProfile.name, cohort: studentProfile.cohort, joinedAt: studentProfile.created_at }
+    : null
+
+  const diagnosticDone = baselineScore !== null
+  const setDiagnosticDone = () => {} // derived — no-op
 
   return {
     user, setUser,
@@ -105,6 +173,5 @@ export function useAppState() {
     earnedBadges, earnBadge,
     diagnosticDone, setDiagnosticDone,
     getLevel,
-    resetAll,
   }
 }

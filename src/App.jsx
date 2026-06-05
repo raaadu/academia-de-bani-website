@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAppState } from './hooks/useLocalStorage'
 import { LanguageProvider } from './hooks/useLanguage'
+import { AuthProvider, useAuth } from './hooks/useAuth'
 import { supabase } from './lib/supabase'
 import Sidebar from './components/Sidebar'
 import BottomNav from './components/BottomNav'
@@ -10,6 +11,23 @@ import ProfileTab from './components/ProfileTab'
 import Leaderboard from './components/Leaderboard'
 import OnboardingModal from './components/OnboardingModal'
 import SplashScreen from './components/SplashScreen'
+
+function LoadingScreen() {
+  return (
+    <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#08090E]">
+      <span className="font-syne font-extrabold text-[22px]" style={{ color: '#6C63FF' }}>
+        Academia de Bani
+      </span>
+      <span
+        className="mt-3 w-2 h-2 rounded-full"
+        style={{
+          background: '#6C63FF',
+          animation: 'pulse 1.2s ease-in-out infinite',
+        }}
+      />
+    </div>
+  )
+}
 
 function AppShell() {
   const [activeTab, setActiveTab] = useState('lectii')
@@ -25,11 +43,9 @@ function AppShell() {
 
   const handleSignOut = async () => {
     setShowSplash(true)
-    if (supabase) {
-      await supabase.auth.signOut()
-    }
-    appState.resetAll()
-    setTimeout(() => setShowSplash(false), 1500)
+    await supabase.auth.signOut({ scope: 'local' })
+    // onAuthStateChange fires → user → null → AuthGate shows OnboardingModal
+    // AppShell unmounts, state resets automatically
   }
 
   const renderTab = () => {
@@ -46,8 +62,6 @@ function AppShell() {
 
   return (
     <div className="flex h-full bg-[#08090E] text-[#F0F0F5] overflow-hidden">
-      {!appState.user && <OnboardingModal appState={appState} />}
-
       {/* Sidebar — desktop only */}
       <div className="hidden md:flex">
         <Sidebar
@@ -72,10 +86,20 @@ function AppShell() {
   )
 }
 
+function AuthGate() {
+  const { user, loading } = useAuth()
+
+  if (loading) return <LoadingScreen />
+  if (!user)   return <OnboardingModal />
+  return <AppShell />
+}
+
 export default function App() {
   return (
     <LanguageProvider>
-      <AppShell />
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
     </LanguageProvider>
   )
 }

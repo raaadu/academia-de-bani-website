@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useLanguage } from '../hooks/useLanguage'
-import { supabase } from '../lib/supabase'
+import { useAuth } from '../hooks/useAuth'
 
 const EyeIcon = ({ open }) =>
   open ? (
@@ -14,8 +14,9 @@ const EyeIcon = ({ open }) =>
     </svg>
   )
 
-export default function OnboardingModal({ appState }) {
+export default function OnboardingModal() {
   const { language, setLanguage, t } = useLanguage()
+  const { signUp, signIn } = useAuth()
   const [mode, setMode] = useState('signup') // 'signup' | 'signin'
 
   // Signup fields
@@ -72,22 +73,17 @@ export default function OnboardingModal({ appState }) {
 
     setLoading(true)
     try {
-      if (supabase) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { data: { name: name.trim(), cohort: cohort.trim() || t('onboarding.independent') } },
-        })
-        if (error) {
-          setAuthError(resolveAuthError(error))
-          return
-        }
+      const { error } = await signUp(
+        email,
+        password,
+        name.trim(),
+        cohort.trim() || t('onboarding.independent'),
+        language,
+      )
+      if (error) {
+        setAuthError(resolveAuthError(error))
       }
-      appState.setUser({
-        name: name.trim(),
-        cohort: cohort.trim() || t('onboarding.independent'),
-        joinedAt: Date.now(),
-      })
+      // On success, onAuthStateChange fires → AuthGate re-renders → AppShell mounts
     } catch (err) {
       setAuthError(t('onboarding.errorGeneric'))
     } finally {
@@ -100,26 +96,12 @@ export default function OnboardingModal({ appState }) {
     setAuthError('')
     setLoading(true)
     try {
-      if (supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) {
-          setAuthError(resolveAuthError(error))
-          return
-        }
-        const meta = data.user?.user_metadata || {}
-        appState.setUser({
-          name: meta.name || email.split('@')[0],
-          cohort: meta.cohort || t('onboarding.independent'),
-          joinedAt: data.user?.created_at ? new Date(data.user.created_at).getTime() : Date.now(),
-        })
-      } else {
-        // No Supabase — demo/local mode
-        appState.setUser({
-          name: email.split('@')[0],
-          cohort: t('onboarding.independent'),
-          joinedAt: Date.now(),
-        })
+      const { error } = await signIn(email, password)
+      if (error) {
+        setAuthError(resolveAuthError(error))
+        return
       }
+      // On success, onAuthStateChange fires → AuthGate re-renders → AppShell mounts
     } catch (err) {
       setAuthError(t('onboarding.errorGeneric'))
     } finally {
