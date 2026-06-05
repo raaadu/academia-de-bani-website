@@ -28,7 +28,33 @@ export function useAppState() {
       supabase.from('exercise_attempts').select('*').eq('student_id', userId),
     ])
 
-    if (student) setStudentProfile(student)
+    if (student) {
+      setStudentProfile(student)
+    } else {
+      // Student row missing — create it lazily from auth metadata
+      // (happens when email confirmation was pending at signup time)
+      const { data: { user: authUser } } = await supabase.auth.getUser()
+      const meta = authUser?.user_metadata || {}
+      const fallback = {
+        id: userId,
+        name: meta.name || authUser?.email?.split('@')[0] || 'User',
+        cohort: meta.cohort || null,
+        language: meta.language || 'ro',
+      }
+      const { error: upsertErr } = await supabase
+        .from('students')
+        .upsert(fallback, { onConflict: 'id' })
+      if (!upsertErr) setStudentProfile(fallback)
+      else console.error('Lazy student create failed:', upsertErr.message)
+    }
+
+    if (!progress) {
+      // Progress row missing — create it lazily (DB trigger may have been blocked)
+      const { error: progressErr } = await supabase
+        .from('progress')
+        .insert({ student_id: userId })
+      if (progressErr) console.error('Lazy progress create failed:', progressErr.message)
+    }
 
     if (progress) {
       setXp(progress.xp_total || 0)

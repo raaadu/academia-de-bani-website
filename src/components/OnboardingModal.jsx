@@ -99,6 +99,7 @@ export default function OnboardingModal() {
     try {
       const { error } = await signIn(email, password)
       if (error) {
+        console.error('Full signin error:', error)
         setAuthError(resolveAuthError(error))
         return
       }

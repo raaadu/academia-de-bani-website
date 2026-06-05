@@ -41,7 +41,10 @@ export function AuthProvider({ children }) {
       return { user: null, error: new Error('No user ID returned from auth') }
     }
 
-    // Step 3: Insert into public.students (upsert is safe on retry)
+    // Step 3: Insert into public.students (upsert is safe on retry).
+    // Non-fatal: if email confirmation is pending there is no session yet, so
+    // auth.uid() returns null and RLS blocks the insert. The row will be
+    // created lazily in fetchAll the first time the user signs in.
     const { error: studentError } = await supabase
       .from('students')
       .upsert(
@@ -50,21 +53,28 @@ export function AuthProvider({ children }) {
       )
 
     if (studentError) {
-      console.error('Student insert failed:', studentError)
-      return { user: null, error: studentError }
+      console.warn('Student row not created during signup (will retry on first login):', studentError.message)
     }
 
-    // Step 4: Progress row created by DB trigger — insert manually if trigger missed
-    const { data: existingProgress } = await supabase
-      .from('progress')
-      .select('id')
-      .eq('student_id', userId)
-      .single()
+    // Step 4: Progress row — also non-fatal for the same reason
+    if (!studentError) {
+      const { data: existingProgress } = await supabase
+        .from('progress')
+        .select('id')
+        .eq('student_id', userId)
+        .single()
 
-    if (!existingProgress) {
-      await supabase.from('progress').insert({ student_id: userId })
+      if (!existingProgress) {
+        const { error: progressError } = await supabase
+          .from('progress')
+          .insert({ student_id: userId })
+        if (progressError) {
+          console.warn('Progress row not created during signup:', progressError.message)
+        }
+      }
     }
 
+    // Auth account was created — that's all we need to unblock the user
     return { user: data.user, error: null }
   }
 
