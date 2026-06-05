@@ -81,6 +81,7 @@ export default function OnboardingModal() {
         language,
       )
       if (error) {
+        console.error('Full signup error:', error)
         setAuthError(resolveAuthError(error))
       }
       // On success, onAuthStateChange fires → AuthGate re-renders → AppShell mounts

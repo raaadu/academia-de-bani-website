@@ -24,18 +24,45 @@ export function AuthProvider({ children }) {
   }, [])
 
   const signUp = async (email, password, name, cohort, language) => {
-    const { data, error } = await supabase.auth.signUp({ email, password })
+    // Step 1: Create auth user
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { name, cohort, language }, // backup: stored in auth metadata
+      },
+    })
+
     if (error) return { user: null, error }
 
-    // Insert student row — DB trigger auto-creates the progress row
-    if (data.user) {
-      const { error: insertError } = await supabase.from('students').insert({
-        id: data.user.id,
-        name,
-        cohort,
-        language,
-      })
-      if (insertError) console.error('students insert:', insertError)
+    // Step 2: Check we actually have a user id
+    const userId = data?.user?.id
+    if (!userId) {
+      return { user: null, error: new Error('No user ID returned from auth') }
+    }
+
+    // Step 3: Insert into public.students (upsert is safe on retry)
+    const { error: studentError } = await supabase
+      .from('students')
+      .upsert(
+        { id: userId, name, cohort: cohort || null, language: language || 'ro' },
+        { onConflict: 'id' },
+      )
+
+    if (studentError) {
+      console.error('Student insert failed:', studentError)
+      return { user: null, error: studentError }
+    }
+
+    // Step 4: Progress row created by DB trigger — insert manually if trigger missed
+    const { data: existingProgress } = await supabase
+      .from('progress')
+      .select('id')
+      .eq('student_id', userId)
+      .single()
+
+    if (!existingProgress) {
+      await supabase.from('progress').insert({ student_id: userId })
     }
 
     return { user: data.user, error: null }
